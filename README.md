@@ -1,84 +1,50 @@
-# How Doorbird Apps Find Devices
+# Doorbird between subnets or VLANs mDNS advertiser
 
-mdns broadcast for `_axis_video._tcp` as a QU (unicast response please)
+### Problem
 
-get replies, but ignore the hostname and A/AAAA fields, and assume the source IP of the dns reply packet is the doorbird host.
-
-this is why avahi-reflector doesn't help, because doorbird apps assume the machine running reflector is the device, and try to connect to it.
-
-a general solution might look something like avahi-reflector but spoofing the source IP of the packet containing the dns reply
+If your Doorbird doorbell is on a different VLAN or subnet to your iOS/Android apps,
+the apps won't make a direct connection, and you get very low framerate and laggy video and audio, because it's routed via Doorbird's Cloud.
 
 
-i think this is just a simple unintended bug in the doorbird code? they want the IP of the device, and grab it (wrongly) from the dns reply packet src ip, instead of parsing out the DNS A record (doorbird devices send dns "additional records" with A, AAAA, etc). If they fixed this behaviour, it would allow general solutions like avahi-reflector to work fine.
+[when viewing video in app: house icon in top right = direct, cloud icon = routed via doorbird's servers]
 
-afaik you are supposed to be able to advertise mDNS services not at your own ip, so this is a bug.
+### mDNS bridging (like avahi-reflector) should work, but doesn't
 
-# Proof of concept
+Doorbird apps uses mDNS to discover devices, learn their IPs, and direct connect to them.
 
-only works with the spoofed source ip
+mDNS doesn't leave the subnet, so you would not expect to discover devices from different subnets via mDNS.
 
-(next step is make this query doorbird vlan and relay results with spoofed srcs, so it doesn't need to be told lots of config)
+Typically you use something like avahi-reflector, to bridge mDNS between subnets.
 
-````python
-#!/usr/bin/env python3
+avahi-reflector doesn't work because the doorbird apps use the source IP on the dns answer packet as the assumed IP of the doorbird device, instead of parsing out the IP from the A record in the dns response. This is presumably a bug in the apps, doesn't seem like it would be intended behaviour.
 
-from scapy.all import *
+### Solution
 
+Respond to the mDNS queries with answers, but spoof the packet source address so it seems like the answers were sent direct from the devices.
 
-def handle_multicast_query_from_app(pkt):
-    d = pkt.getlayer(DNSQR)
-    if not d:
-        return
-    if d.qname != b'_axis-video._tcp.local.':
-        return
-    src_ip = pkt.getlayer(IP).src
-    src_port = pkt.getlayer(UDP).sport
+## Usage
 
-    print(f'Got multicast query from {src_ip}:{src_port}, will reply.')
-    print(pkt.summary())
+Rather than try and act like avahi-reflector and relay mDNS queries onto the other subnet, my solution hardcodes the IP(s) to advertise for the doorbird devices. As long as the iOS and Android (or indoor station) devices can reach the doorbird IP, it works. Your doorbell probably has a static DHCP lease anyway.
 
+Assuming eth0 is the interface where the android/ios clients live:
 
-    dns_part = DNS( id=pkt[DNS].id,  # replies copy question ids, for matching up (16bit)
-                    aa=1,  # authoritative
-                    qr=1,  # is response
-                    rd=pkt[DNS].rd,  # recursion desired?
-                    qdcount=pkt[DNS].qdcount,  # copy question count
-                    qd=pkt[DNS].qd,  # original question
-                    # populated below
-#                   ancount=1, # we provide 1 answer
-#                   an=answer,   # answer
-#                   arcount=0,  # additional record count
-#                   ar=None,   # additional records
-                    )
+```bash
+pip3 install scapy  # have python3 installed on linux first..
+./doorbird_mdns_responder -v -i eth0 -a aa:bb:cc:dd:12:13/10.0.1.10
+```
 
-    name = 'Doorstation - 1CCAE3726551'
-    fqname = 'Doorstation - 1CCAE3726551._axis-video._tcp.local'
-    hostname = 'bha-1CCAE3726551.local'
+Now restart your app, select LAN-only mode, view video stream, turn off LAN-only mode, and it should remember the IP from now on, and always get a direct connection - as long as you keep the responder running.
 
-    # rr = resource record, aka DNS reply
-    dns_part.an = DNSRR(rrname="_axis-video._tcp.local", type="PTR", rclass=1, ttl=10, rdata=fqname)
+### Note for doorbirds with wifi + ethernet
 
-    ar_srv = DNSRRSRV(rrname=fqname, rclass=1, ttl=10, priority=0, weight=0, port=80, target=hostname)
-    #ar_txt = DNSRR(rrname=fqname, type="TXT", rclass=0x8001, ttl=10, rdata="macaddress=1CCAE3726551")
-    ar_txt = DNSRR(rrname=fqname, type="TXT", rclass=1, ttl=10, rdata="macaddress=1CCAE3726551")
-    ar_a   = DNSRR(rrname=hostname, type="A", rclass=1, ttl=10, rdata='10.0.1.18')
+Doorbird devices describe themselves with the wifi mac in mDNS responses, even if connected via ethernet. You can get the mac from the digital passport (the paper with the QR code on it). You should use the wifi mac with the IP, even if the IP is from a network cable. I think they use the first (wifi) mac like a serial number or something.
 
-    dns_part.ar = ar_srv / ar_txt / ar_a
+## Dear Doorbird..
 
+Please would you fix this, I am happy to test it for you. A fix where you take the doorbell IP from the mDNS reply A record instead of the packet src would mean general solutions like avahi-reflector would work, and I can delete this code. Thanks!
 
+## Questions? Was this useful?
 
-    # you gotta spoof the source ip of the dns response to the device, because it seems like
-    # doorbird take the IP from the dns responder, not the IP in the actual dns reply (argh!)
-    # this is why avahi-reflector doesn't work, since doorbird tries to connect to the IP of the reflector machine.
-    rpkt = Ether()/IP(dst=src_ip, src='10.0.1.18', ttl=1)/UDP(sport=5353, dport=src_port)/dns_part.compress()
-    sendp(rpkt, verbose=1, iface='lanif')
+* [twitter.com/metabrew](https://twitter.com/metabrew)
+* rj@metabrew.com
 
-
-
-if __name__ == "__main__":
-    print("Listening for multicast queries from apps looking for doorbird devices..")
-    sniff(iface='lanif',
-          filter="udp and dst port 5353 and dst host 224.0.0.251 and src net 10.0.0.0/24",  # and src host 10.0.0.23",
-          store=0,
-          prn=handle_multicast_query_from_app)
-````
