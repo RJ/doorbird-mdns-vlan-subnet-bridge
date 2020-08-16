@@ -119,7 +119,7 @@ def handle_multicast_query_from_app(pkt):
         if args.verbose:
             print(f'< Sending answer to {src_ip} for "{fqname}" {doorbird["addr"]}')
 
-        sendp(reply_pkt, iface=args.iface)
+        sendp(reply_pkt, verbose=0, iface=args.iface)
 
 
 if __name__ == "__main__":
@@ -129,7 +129,7 @@ if __name__ == "__main__":
         for db in doorbirds:
             print(f'* ip={db["addr"]} mac={db["mac"]}')
 
-    print("Listening on {args.iface} for mDNS queries..")
+    print(f"Listening on {args.iface} for mDNS queries..")
 
     sniff(
         iface=args.iface,
