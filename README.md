@@ -39,6 +39,26 @@ Now restart your app, select LAN-only mode, view video stream, turn off LAN-only
 
 Doorbird devices describe themselves with the wifi mac in mDNS responses, even if connected via ethernet. You can get the mac from the digital passport (the paper with the QR code on it). You should use the wifi mac with the IP, even if the IP is from a network cable. I think they use the first (wifi) mac like a serial number or something.
 
+### iptables rules needed too
+
+Remember you need to allow udp from doorbird to apps on ports 6524 and 35344, for the push notification events like "doorbell pressed" to work in LAN-only mode.
+
+Example, from my `iptables-save` output on my router box, which permits the doorbird at 10.0.1.10 to send packets to my wifi subnet:
+
+```
+-A FORWARD -p udp -s 10.0.1.10 -d 10.0.0.1/24 --dport 6524 -j ACCEPT -m comment --comment "Doorbird udp fwd"
+-A FORWARD -p udp -s 10.0.1.10 -d 10.0.0.1/24 --dport 35344 -j ACCEPT -m comment --comment "Doorbird udp fwd"
+```
+
+Also make sure your phone is allowed to access the doorbird IP for direct connections:
+
+```
+# Allow specific IPs access to the doorbird device
+-A FORWARD -s 10.0.0.23 -d 10.0.1.10 -j ACCEPT -m comment --comment "my phone to doorbird"
+```
+
+This is specific to your network topology of course.
+
 ## Dear Doorbird..
 
 Please would you fix this, I am happy to test it for you. A fix where you take the doorbell IP from the mDNS reply A record instead of the packet src would mean general solutions like avahi-reflector would work, and I can delete this code. Thanks!
